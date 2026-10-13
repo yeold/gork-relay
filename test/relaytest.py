@@ -7,8 +7,13 @@ Usage:  python3 test/relaytest.py ./gork-relay
 The SPX side is played by a small client here that sends its frames in UDP
 datagrams, as QEMU does (-x udp:PORT), in each Ethernet encapsulation and
 in token ring framing.  Exits 0 only if every check passes.
+
+To check the eth: link as well, on a real interface, set $RELAYTEST_TAP
+and run as root on Linux: the test makes a tap device, the relay listens
+on it, and the client is the other end of the tap.
 """
-import http.server, os, random, socket, struct, subprocess, sys, threading, time
+import fcntl, http.server, os, random, select, socket, struct, subprocess
+import sys, threading, time
 
 BINARY = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "./gork-relay")
 UP, TCP, LINK, LINK_TR = 18080, 18443, 18444, 18445
@@ -97,6 +102,7 @@ class Spx:
         self.s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.s.settimeout(0.3)
         self.to = ("127.0.0.1", port)
+        self.tap = None                         # or the tap's descriptor
         self.frame, self.medium, self.rif, self.drop = frame, medium, rif, drop
         self.id, self.peer = random.randrange(1, 0xff00), 0xffff
         self.seq = self.ack = 0
@@ -110,16 +116,27 @@ class Spx:
         if random.random() < self.drop:
             self.lost += 1
             return
-        self.s.sendto(encap(self.frame, ipx(5, SOCK, self.sock, head + data),
-                            self.medium, self.rif), self.to)
+        f = encap(self.frame, ipx(5, SOCK, self.sock, head + data),
+                  self.medium, self.rif)
+        if self.tap is not None:
+            os.write(self.tap, f.ljust(60, b"\0"))
+        else:
+            self.s.sendto(f, self.to)
 
     def recv(self):
         """One SPX packet from the relay: (ctl, dst, seq, ack, data)."""
         while True:
-            try:
-                f = self.s.recv(8192)
-            except socket.timeout:
-                return None
+            if self.tap is not None:
+                if not select.select([self.tap], [], [], 0.3)[0]:
+                    return None
+                f = os.read(self.tap, 8192)
+                if f[:6] != MAC or f[6:12] != RELAY_MAC:
+                    continue                    # the kernel's own chatter
+            else:
+                try:
+                    f = self.s.recv(8192)
+                except socket.timeout:
+                    return None
             if random.random() < self.drop:
                 continue
             p = decap(self.frame, f, self.medium, self.rif)
@@ -177,8 +194,9 @@ class Spx:
         return self.got
 
 
-def spx_round_trip(port, body, path=b"/", **kw):
+def spx_round_trip(port, body, path=b"/", tap=None, **kw):
     c = Spx(port, **kw)
+    c.tap = tap
     c.connect()
     c.write(request(path, body))
     return c, reply_body(c.read_all())
@@ -252,6 +270,33 @@ def check_token_ring():
     print("ok: SPX in token ring frames, with and without a source route")
 
 
+def check_eth():
+    """The eth: link: a relay of its own on a tap device, and we are the
+    other end of the tap."""
+    global RELAY_MAC
+    tap = os.open("/dev/net/tun", os.O_RDWR)
+    # TUNSETIFF, IFF_TAP | IFF_NO_PI
+    fcntl.ioctl(tap, 0x400454ca, struct.pack("16sH", b"gorkrelay0", 0x1002))
+    subprocess.run(["ip", "link", "set", "gorkrelay0", "up"], check=True)
+    with open("/sys/class/net/gorkrelay0/address") as f:
+        mac = bytes.fromhex(f.read().strip().replace(":", ""))
+    relay = subprocess.Popen([BINARY, "-p", "-t", "0", "-x", "eth:gorkrelay0",
+                              "127.0.0.1:%d" % UP])
+    saved, RELAY_MAC = RELAY_MAC, mac
+    try:
+        time.sleep(0.5)
+        for frame in ("eth2", "8022", "raw", "snap"):
+            _, got = spx_round_trip(0, b"wire", frame=frame, tap=tap)
+            assert got == b"eriw", (frame, got)
+        _, got = spx_round_trip(0, b"x", path=b"/big", tap=tap)
+        assert got == BIG, len(got)
+    finally:
+        RELAY_MAC = saved
+        relay.terminate()
+        os.close(tap)
+    print("ok: SPX on a network interface (a tap), all four encapsulations")
+
+
 def check_rip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(2)
@@ -283,6 +328,8 @@ def main():
         check_spx_parallel()
         check_token_ring()
         check_rip()
+        if os.environ.get("RELAYTEST_TAP"):
+            check_eth()
     finally:
         for r in relays:
             r.terminate()

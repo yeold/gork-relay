@@ -21,15 +21,14 @@ on a machine and a network you trust.
 
 ## Status
 
-New, and tested only against itself so far:
+New. What has been tried:
 
 | Part | State |
 |---|---|
 | TCP to TLS | Works; `make check`, and by hand against a real HTTPS server. |
-| SPX, the relay's side | Works against the test client in `test/relaytest.py`: all four Ethernet encapsulations, lost packets, many connections. **Not yet tried against a real IPX stack** (Novell's on DOS, NWLink on Windows). |
+| SPX | Works with gork's DOS build over Novell's IPX/SPX (PDIPX 1.10 on a packet driver, FreeDOS 1.3 in QEMU, Ethernet II frames): gork's `dostest.py` runs a round trip with a reply of many packets. The test client in `test/relaytest.py` covers the other three Ethernet encapsulations, lost packets and several connections at once. **Not yet tried with NWLink**, the IPX of Windows 95 to XP, nor with `IPXODI`. |
+| The `eth:` link | Works on Linux, on a tap device, as a packet socket and through libpcap (`RELAYTEST_TAP=1 make check`, as root). Not run on Cygwin with Npcap. |
 | Token ring framing | Written from the specifications and checked only against frames the test builds. No emulator has a token ring card, and Linux dropped its drivers in 3.5, so it has met no real ring. |
-| The `eth:` link with libpcap, and Cygwin | Compiles on Linux with libpcap. Not run on Cygwin. |
-| gork's side of SPX | Not written yet. Today only the test client speaks SPX to the relay. |
 
 ## Build
 
@@ -40,6 +39,9 @@ A C99 compiler, make and OpenSSL 1.1 or later (`libssl-dev`,
 make            # Linux
 make check      # needs python3
 ```
+
+`RELAYTEST_TAP=1 make check`, as root, also checks the `eth:` link, on a
+tap device it makes.
 
 On other Unix systems, and on Cygwin, the `eth:` link goes through libpcap
 or [Npcap](https://npcap.com/):

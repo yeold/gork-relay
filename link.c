@@ -69,6 +69,21 @@ static int open_eth(struct link *l, const char *dev) {
     if (pcap_setnonblock(p, 1, err) != 0)
         fprintf(stderr, "gork-relay: %s: %s\n", dev, err);
     l->pcap = p;
+#ifdef SIOCGIFHWADDR
+    if (!l->have_mac) {         /* elsewhere it must be given with -m */
+        struct ifreq ifr;
+        int          s = socket(AF_INET, SOCK_DGRAM, 0);
+
+        memset(&ifr, 0, sizeof ifr);
+        strncpy(ifr.ifr_name, dev, sizeof ifr.ifr_name - 1);
+        if (s >= 0 && ioctl(s, SIOCGIFHWADDR, &ifr) == 0) {
+            memcpy(l->mac, ifr.ifr_hwaddr.sa_data, 6);
+            l->have_mac = 1;
+        }
+        if (s >= 0)
+            close(s);
+    }
+#endif
 #ifdef __CYGWIN__
     l->fd = -1;                 /* Npcap has nothing poll() can wait on */
 #else
