@@ -157,6 +157,6 @@ gork-relay is free software: you can redistribute it and modify it under
 the terms of the GNU General Public License as published by the Free
 Software Foundation, either version 3 of the License, or (at your option)
 any later version. It comes with no warranty. The full text is in
-[COPYING](COPYING).
+[LICENSE](LICENSE).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to send changes.

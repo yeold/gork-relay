@@ -29,6 +29,6 @@ clear, and so does a capture.
 ## Licence
 
 gork-relay is under the GNU General Public License, version 3 or later
-(see [COPYING](COPYING)). By sending a change you agree that it is
+(see [LICENSE](LICENSE)). By sending a change you agree that it is
 published under the same licence, and state that you have the right to
 submit it.
