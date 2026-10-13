@@ -6,8 +6,7 @@ for old and obscure operating systems.
 gork does not do TLS: it sends plain HTTP to a relay on your network, and
 the relay passes it on to the API over TLS. Until now that relay was one
 line of socat. gork-relay does the same job, and adds a second way in for
-machines that have no TCP/IP at all: **SPX, over an IPX network**, on
-Ethernet or token ring.
+machines that have no TCP/IP at all: **SPX, over an IPX network**.
 
 ```
 +----------+  plain HTTP   +------------+     TLS     +--------------+
@@ -28,7 +27,6 @@ New. What has been tried:
 | TCP to TLS | Works; `make check`, and by hand against a real HTTPS server. |
 | SPX | Works with two real IPX stacks, both in QEMU on Ethernet. Novell's IPX/SPX on DOS (PDIPX 1.10 on a packet driver, FreeDOS 1.3, Ethernet II frames): gork's `dostest.py` runs a round trip with a reply of many packets. And NWLink, the IPX of Windows (Windows Me): it asked for its network by RIP, took the number and the frame type from the relay's answer, and gork's Windows build ran its tool round trips over it, by hand. The test client in `test/relaytest.py` covers the other Ethernet encapsulations, lost packets and several connections at once. Not tried: `IPXODI`, and Windows versions other than Me. |
 | The `eth:` link | Works on Linux, on a tap device, as a packet socket and through libpcap (`RELAYTEST_TAP=1 make check`, as root). Not run on Cygwin with Npcap. |
-| Token ring framing | Written from the specifications and checked only against frames the test builds. No emulator has a token ring card, and Linux dropped its drivers in 3.5, so it has met no real ring. |
 
 ## Build
 
@@ -112,24 +110,6 @@ The packet socket needs root or `CAP_NET_RAW`
                        -device ne2k_isa,netdev=n0
   ```
 
-### Token ring
-
-Token ring is a kind of network, not a protocol: IP and IPX both run over
-it, and the machine on the ring needs a driver for its card, nothing more.
-What the relay adds is the framing: on an interface that is a token ring
-(`eth:tr0`) it reads and writes 802.5 frames, with IPX in 802.2 or SNAP,
-and it sends replies back along the source route the request came by.
-
-The catch is the interface. Linux removed its token ring drivers in 3.5,
-so a current machine cannot be put on a ring directly. The ways in:
-
-- a bridge or router between the ring and an Ethernet (many Cisco routers
-  do it): the relay then sees Ethernet frames, and needs nothing special;
-- the relay on a Linux before 3.5, with a token ring card.
-
-For gork itself over TCP/IP, a token ring is no different from an
-Ethernet to anything but the driver.
-
 ## What it implements
 
 One IPX node with one SPX listener, in user space ([ipx.c](ipx.c)):
@@ -147,7 +127,7 @@ One IPX node with one SPX listener, in user space ([ipx.c](ipx.c)):
 |---|---|
 | [relay.c](relay.c) | Options, the TCP listener, the pump to the upstream server (TLS) |
 | [ipx.c](ipx.c), [ipx.h](ipx.h) | IPX input, RIP, SPX |
-| [frame.c](frame.c), [frame.h](frame.h) | IPX in and out of Ethernet and token ring frames |
+| [frame.c](frame.c), [frame.h](frame.h) | IPX in and out of link-layer frames |
 | [link.c](link.c), [link.h](link.h) | The links: packet socket, libpcap, UDP |
 | [test/relaytest.py](test/relaytest.py) | The checks, with an SPX client of their own |
 
