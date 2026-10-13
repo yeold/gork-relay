@@ -26,7 +26,7 @@ New. What has been tried:
 | Part | State |
 |---|---|
 | TCP to TLS | Works; `make check`, and by hand against a real HTTPS server. |
-| SPX | Works with gork's DOS build over Novell's IPX/SPX (PDIPX 1.10 on a packet driver, FreeDOS 1.3 in QEMU, Ethernet II frames): gork's `dostest.py` runs a round trip with a reply of many packets. The test client in `test/relaytest.py` covers the other three Ethernet encapsulations, lost packets and several connections at once. **Not yet tried with NWLink**, the IPX of Windows 95 to XP, nor with `IPXODI`. |
+| SPX | Works with two real IPX stacks, both in QEMU on Ethernet. Novell's IPX/SPX on DOS (PDIPX 1.10 on a packet driver, FreeDOS 1.3, Ethernet II frames): gork's `dostest.py` runs a round trip with a reply of many packets. And NWLink, the IPX of Windows (Windows Me): it asked for its network by RIP, took the number and the frame type from the relay's answer, and gork's Windows build ran its tool round trips over it, by hand. The test client in `test/relaytest.py` covers the other Ethernet encapsulations, lost packets and several connections at once. Not tried: `IPXODI`, and Windows versions other than Me. |
 | The `eth:` link | Works on Linux, on a tap device, as a packet socket and through libpcap (`RELAYTEST_TAP=1 make check`, as root). Not run on Cygwin with Npcap. |
 | Token ring framing | Written from the specifications and checked only against frames the test builds. No emulator has a token ring card, and Linux dropped its drivers in 3.5, so it has met no real ring. |
 
