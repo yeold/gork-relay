@@ -29,6 +29,22 @@ gork-relay$(EXE): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) $(LIBS)
 
 $(OBJS): ipx.h link.h frame.h sys.h
+relay.o: version.h
+
+# In a git checkout, v<version>-beta-<commits>, and -dirty when tracked
+# files are changed; out of one (a release tarball), the version alone.
+# Written only when it changes, so relay.o is rebuilt just then.
+version.h: FORCE
+	@v=$$(sed -n 's/^#define VERSION "\(.*\)"/\1/p' relay.c); \
+	if test -e .git && git rev-parse --verify -q HEAD >/dev/null 2>&1; then \
+	    n=$$(git rev-list HEAD | wc -l | tr -d ' '); \
+	    d=$$(git diff HEAD --quiet 2>/dev/null || echo -dirty); \
+	    echo "#define GIT_VERSION \"v$$v-beta-$$n$$d\"" >version.h.new; \
+	else \
+	    echo "/* not a git checkout: the version alone */" >version.h.new; \
+	fi; \
+	cmp -s version.h.new version.h || mv version.h.new version.h; \
+	rm -f version.h.new
 
 check: gork-relay$(EXE)
 	python3 test/relaytest.py ./gork-relay$(EXE)
@@ -37,6 +53,6 @@ install: gork-relay$(EXE)
 	install -D gork-relay$(EXE) $(DESTDIR)$(PREFIX)/bin/gork-relay$(EXE)
 
 clean:
-	rm -f gork-relay gork-relay.exe *.o
+	rm -f gork-relay gork-relay.exe *.o version.h
 
-.PHONY: check install clean
+.PHONY: check install clean FORCE

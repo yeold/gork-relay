@@ -28,8 +28,14 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include "ipx.h"
+#include "version.h"
 
 #define VERSION "0.2"
+/* In a git checkout the Makefile names the build (version.h):
+   v0.2-beta-<commits>, and -dirty with tracked files changed. */
+#ifndef GIT_VERSION
+#define GIT_VERSION VERSION
+#endif
 
 static const char *up_host;             /* where everything is passed on to */
 static const char *up_port = "443";
@@ -39,7 +45,7 @@ static int         verbose;
 
 static void usage(void) {
     fprintf(stderr,
-"usage: gork-relay [options] HOST[:PORT]\n"
+"usage: gork-relay [options] HOST[:PORT]   (or --version)\n"
 "Pass what gork sends on to HOST (port 443 unless given), over TLS.\n"
 "  -t [ADDR:]PORT  listen for TCP there (default 8443; -t 0: no TCP)\n"
 "  -x LINK         listen for SPX on this link:\n"
@@ -303,6 +309,10 @@ int main(int argc, char **argv) {
     unsigned          mac[6];
     int               o, i, lfd = -1;
 
+    if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+        printf("gork-relay %s\n", GIT_VERSION);
+        return 0;
+    }
     x.socket = 0x8443;
     while ((o = getopt(argc, argv, "t:x:n:s:m:pkv")) != -1) {
         switch (o) {
@@ -368,8 +378,9 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (verbose && lfd >= 0)
-        fprintf(stderr, "gork-relay: TCP on %s, passing on to %s:%s%s\n",
-                tcp, up_host, up_port, up_plain ? " (no TLS)" : "");
+        fprintf(stderr, "gork-relay %s: TCP on %s, passing on to %s:%s%s\n",
+                GIT_VERSION, tcp, up_host, up_port,
+                up_plain ? " (no TLS)" : "");
 
     for (;;) {
         int n = 0, first, r;

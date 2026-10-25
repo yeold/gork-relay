@@ -1,3 +1,5 @@
 gork-relay
+gork-relay.exe
+version.h
 *.o
 test/__pycache__/
