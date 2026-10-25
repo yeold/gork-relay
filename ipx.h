@@ -11,7 +11,7 @@
 #ifndef IPX_H
 #define IPX_H
 
-#include <poll.h>
+#include "sys.h"
 #include "link.h"
 
 #define IPX_HDR     30

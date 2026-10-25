@@ -1,10 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* ipx.c -- see ipx.h. */
-#include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/socket.h>
 #include <sys/time.h>
 #include "ipx.h"
 
@@ -119,7 +116,7 @@ static void conn_free(struct ipx *x, struct conn *c, const char *why) {
     if (x->verbose)
         fprintf(stderr, "gork-relay: spx %04x closed: %s\n", c->id, why);
     if (c->fd >= 0)
-        close(c->fd);
+        closesocket(c->fd);
     c->used = 0;
 }
 
@@ -262,9 +259,11 @@ static void spx_input(struct ipx *x, const unsigned char *p, size_t len,
         size_t off = 0;
 
         while (off < dlen) {
-            ssize_t w = write(c->fd, p + IPX_HDR + SPX_HDR + off, dlen - off);
+            int w = (int) send(c->fd,
+                               (const char *) p + IPX_HDR + SPX_HDR + off,
+                               (int) (dlen - off), 0);
 
-            if (w < 0 && errno == EINTR)
+            if (w < 0 && sock_errno == SOCK_EINTR)
                 continue;
             if (w <= 0)
                 break;
@@ -347,16 +346,16 @@ void spx_service(struct ipx *x, struct pollfd *p, int n) {
             continue;
         for (k = 0; k < n; k++) {
             unsigned char data[SPX_DATA];
-            ssize_t       r;
+            int           r;
 
-            if (p[k].fd != c->fd || !(p[k].revents & (POLLIN | POLLHUP)) ||
+            if ((int) p[k].fd != c->fd || !(p[k].revents & (POLLIN | POLLHUP)) ||
                 c->qn >= WINDOW)
                 continue;
-            r = read(c->fd, data, sizeof data);
+            r = (int) recv(c->fd, (char *) data, sizeof data, 0);
             if (r > 0) {
                 queue(x, c, 0, data, (size_t) r);
-            } else if (r == 0 || errno != EINTR) {
-                close(c->fd);                   /* the reply is complete */
+            } else if (r == 0 || sock_errno != SOCK_EINTR) {
+                closesocket(c->fd);             /* the reply is complete */
                 c->fd = -1;
             }
             break;

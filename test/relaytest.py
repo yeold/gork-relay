@@ -3,6 +3,7 @@
 """Checks for gork-relay, against a fake upstream server.
 
 Usage:  python3 test/relaytest.py ./gork-relay
+        python3 test/relaytest.py wine ./gork-relay.exe     (a command)
 
 The SPX side is played by a small client here that sends its frames in UDP
 datagrams, as QEMU does (-x udp:PORT), in each Ethernet encapsulation and
@@ -11,12 +12,17 @@ in token ring framing.  Exits 0 only if every check passes.
 To check the eth: link as well, on a real interface, set $RELAYTEST_TAP
 and run as root on Linux: the test makes a tap device, the relay listens
 on it, and the client is the other end of the tap.
+
+$RELAYTEST_TLS checks TLS on the Internet: a request to api.anthropic.com
+gets an answer, and badssl.com's bad certificates are refused.
 """
-import fcntl, http.server, os, random, select, socket, struct, subprocess
+import http.server, os, random, select, socket, struct, subprocess
 import sys, threading, time
 
-BINARY = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "./gork-relay")
-UP, TCP, LINK, LINK_TR = 18080, 18443, 18444, 18445
+# the relay, or a command that runs it (wine ...): the last word is its path
+CMD = sys.argv[1:] or ["./gork-relay"]
+CMD[-1] = os.path.abspath(CMD[-1])
+UP, TCP, LINK, LINK_TR, TLS = 18080, 18443, 18444, 18445, 18446
 RELAY_MAC = bytes.fromhex("02676f726b01")
 MAC = bytes.fromhex("525400123456")
 SOCK = 0x8443
@@ -276,11 +282,12 @@ def check_eth():
     global RELAY_MAC
     tap = os.open("/dev/net/tun", os.O_RDWR)
     # TUNSETIFF, IFF_TAP | IFF_NO_PI
+    import fcntl                        # Linux only, as is the tap
     fcntl.ioctl(tap, 0x400454ca, struct.pack("16sH", b"gorkrelay0", 0x1002))
     subprocess.run(["ip", "link", "set", "gorkrelay0", "up"], check=True)
     with open("/sys/class/net/gorkrelay0/address") as f:
         mac = bytes.fromhex(f.read().strip().replace(":", ""))
-    relay = subprocess.Popen([BINARY, "-p", "-t", "0", "-x", "eth:gorkrelay0",
+    relay = subprocess.Popen(CMD + ["-p", "-t", "0", "-x", "eth:gorkrelay0",
                               "127.0.0.1:%d" % UP])
     saved, RELAY_MAC = RELAY_MAC, mac
     try:
@@ -295,6 +302,44 @@ def check_eth():
         relay.terminate()
         os.close(tap)
     print("ok: SPX on a network interface (a tap), all four encapsulations")
+
+
+def check_tls():
+    """Real TLS: the system's certificates are found and checked."""
+    def ask(port, host):
+        relay = subprocess.Popen(CMD + ["-t", "127.0.0.1:%d" % port, host],
+                                 stderr=subprocess.PIPE)
+        try:
+            end, got = time.time() + 30, None
+            while time.time() < end and got is None:
+                try:
+                    s = socket.create_connection(("127.0.0.1", port), 2)
+                except OSError:
+                    time.sleep(0.2)
+                    continue
+                s.settimeout(30)
+                s.sendall(request(b"/", b"{}").replace(b"Host: fake",
+                                                       b"Host: " + host.encode()))
+                got = b""
+                try:
+                    while True:
+                        b = s.recv(4096)
+                        if not b:
+                            break
+                        got += b
+                except OSError:
+                    pass                # a refused connection may be reset
+                s.close()
+        finally:
+            relay.terminate()
+            err = relay.communicate()[1].decode(errors="replace")
+        return got or b"", err
+    got, err = ask(TLS, "api.anthropic.com")
+    assert got.startswith(b"HTTP/1.1 "), (got[:80], err)
+    for host in ("wrong.host.badssl.com", "self-signed.badssl.com"):
+        got, err = ask(TLS, host)
+        assert got == b"" and "certificate" in err, (host, got[:80], err)
+    print("ok: TLS, with the certificate checked (and bad ones refused)")
 
 
 def check_rip():
@@ -315,11 +360,20 @@ def main():
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", UP), Upstream)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     up = "127.0.0.1:%d" % UP
-    relays = [subprocess.Popen([BINARY, "-p", "-n", "c0ffee", "-t", str(TCP),
+    relays = [subprocess.Popen(CMD + ["-p", "-n", "c0ffee", "-t", str(TCP),
                                 "-x", "udp:127.0.0.1:%d" % LINK, up]),
-              subprocess.Popen([BINARY, "-p", "-t", "0",
+              subprocess.Popen(CMD + ["-p", "-t", "0",
                                 "-x", "udp+tr:127.0.0.1:%d" % LINK_TR, up])]
     try:
+        # until the first answers (under Wine that takes a while), and a
+        # little more for the second
+        end = time.time() + 30
+        while time.time() < end:
+            try:
+                socket.create_connection(("127.0.0.1", TCP), 1).close()
+                break
+            except OSError:
+                time.sleep(0.2)
         time.sleep(0.5)
         check_tcp()
         check_spx_frames()
@@ -330,6 +384,8 @@ def main():
         check_rip()
         if os.environ.get("RELAYTEST_TAP"):
             check_eth()
+        if os.environ.get("RELAYTEST_TLS"):
+            check_tls()
     finally:
         for r in relays:
             r.terminate()

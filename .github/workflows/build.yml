@@ -1,5 +1,6 @@
 # Build gork-relay and run its checks, with the packet socket and with
-# libpcap.  The eth: link is tried on a tap device, which needs root.
+# libpcap.  The eth: link is tried on a tap device, which needs root.  And
+# on Windows: a native .exe (MinGW-w64, cross-built and in MSYS2) and Cygwin.
 name: build
 
 on:
@@ -28,6 +29,94 @@ jobs:
           make PCAP=1 CFLAGS="-O2 -Wall -W -Werror"
           sudo RELAYTEST_TAP=1 python3 test/relaytest.py ./gork-relay 2>&1 | tee -a test.log
       # The log needs a login to read; an annotation does not.
+      - if: failure()
+        run: |
+          test -f test.log || exit 0
+          printf '::error title=relaytest::%s\n' "$(tail -c 3000 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+
+  # Windows with MinGW-w64: both .exe, cross-built and linked statically
+  # (Fedora has a static OpenSSL for MinGW), then checked on Windows itself.
+  windows-build:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: dnf -q -y install make mingw32-gcc mingw32-openssl-static mingw32-zlib-static mingw32-pkg-config mingw64-gcc mingw64-openssl-static mingw64-zlib-static mingw64-pkg-config
+      - run: |
+          for a in i686 x86_64; do
+              make clean
+              make WIN=1 CC=$a-w64-mingw32-gcc CFLAGS="-O2 -Wall -W -Werror" LDFLAGS="-static -s" \
+                  SSLLIBS="$($a-w64-mingw32-pkg-config --static --libs openssl)"
+              mv gork-relay.exe gork-relay-$a.exe
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gork-relay-windows
+          path: gork-relay-*.exe
+
+  windows:
+    needs: windows-build
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELAYTEST_TLS: 1
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: gork-relay-windows
+      - run: python test/relaytest.py gork-relay-x86_64.exe 2>&1 | tee test.log
+      - run: python test/relaytest.py gork-relay-i686.exe 2>&1 | tee test.log
+      - if: failure()
+        run: |
+          test -f test.log || exit 0
+          printf '::error title=relaytest::%s\n' "$(tail -c 3000 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+
+  # The same built on Windows, as a user would: MSYS2's MinGW-w64.
+  msys2:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    env:
+      RELAYTEST_TLS: 1
+    steps:
+      - uses: actions/checkout@v5
+      # v2.33.0, by its commit: an action of a third party is pinned
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        with:
+          msystem: UCRT64
+          install: make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openssl mingw-w64-ucrt-x86_64-python
+      - run: make WIN=1 CC=gcc CFLAGS="-O2 -Wall -W -Werror"
+      - run: python test/relaytest.py ./gork-relay.exe 2>&1 | tee test.log
+      - if: failure()
+        run: |
+          test -f test.log || exit 0
+          printf '::error title=relaytest::%s\n' "$(tail -c 3000 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+
+  cygwin:
+    runs-on: windows-latest
+    defaults:
+      run:
+        # A login shell, so /usr/bin is first in PATH; CHERE_INVOKING keeps
+        # it in the checkout instead of changing to the home directory.
+        shell: C:\cygwin\bin\bash.exe --login -eo pipefail -o igncr '{0}'
+    env:
+      CHERE_INVOKING: 1
+      RELAYTEST_TLS: 1
+    steps:
+      - run: git config --global core.autocrlf input
+        shell: bash
+      - uses: actions/checkout@v5
+      # v6, by its commit: an action of a third party is pinned
+      - uses: cygwin/cygwin-install-action@3f0a3f9f988f7e96b8c18098ae05eaec175f5b52
+        with:
+          install-dir: C:\cygwin
+          packages: gcc-core make libssl-devel python3 ca-certificates
+      - run: make CFLAGS="-O2 -Wall -W -Werror"
+      - run: make check 2>&1 | tee test.log
       - if: failure()
         run: |
           test -f test.log || exit 0

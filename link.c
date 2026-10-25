@@ -1,16 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* link.c -- see link.h. */
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/types.h>
-#include <sys/socket.h>
+#include "sys.h"
+#ifndef WINSOCK
 #include <sys/ioctl.h>
-#include <arpa/inet.h>
 #include <net/if.h>
+#endif
 #ifdef USE_PCAP
 #include <pcap.h>
 #elif defined(__linux__)
@@ -41,12 +38,13 @@ static int open_udp(struct link *l, const char *spec) {
         fprintf(stderr, "gork-relay: bad udp link, want udp:[ADDR:]PORT\n");
         return -1;
     }
-    l->fd = socket(AF_INET, SOCK_DGRAM, 0);
+    l->fd = (int) socket(AF_INET, SOCK_DGRAM, 0);
     if (l->fd < 0 || bind(l->fd, (struct sockaddr *) &a, sizeof a) != 0) {
-        perror("gork-relay: udp link");
+        fprintf(stderr, "gork-relay: udp link: %s\n",
+                sock_strerror(sock_errno));
         return -1;
     }
-    fcntl(l->fd, F_SETFL, O_NONBLOCK);
+    set_nonblock(l->fd);
     return 0;
 }
 
@@ -84,7 +82,7 @@ static int open_eth(struct link *l, const char *dev) {
             close(s);
     }
 #endif
-#ifdef __CYGWIN__
+#if defined(__CYGWIN__) || defined(WINSOCK)
     l->fd = -1;                 /* Npcap has nothing poll() can wait on */
 #else
     l->fd = pcap_get_selectable_fd(p);
@@ -131,14 +129,14 @@ static int open_eth(struct link *l, const char *dev) {
         perror(dev);
         return -1;
     }
-    fcntl(l->fd, F_SETFL, O_NONBLOCK);
+    set_nonblock(l->fd);
     return 0;
 }
 #else
 static int open_eth(struct link *l, const char *dev) {
     (void) l;
     fprintf(stderr, "gork-relay: no eth link for %s in this build: it needs "
-                    "Linux, or USE_PCAP with libpcap or Npcap\n", dev);
+                    "Linux, or PCAP=1 with libpcap or Npcap\n", dev);
     return -1;
 }
 #endif
@@ -176,13 +174,14 @@ int link_open(struct link *l, const char *spec) {
 
 int link_recv(struct link *l, unsigned char *buf, size_t cap,
               struct lladdr *from) {
-    ssize_t n;
+    int n;
 
     memset(from, 0, sizeof *from);
     if (l->kind == KIND_UDP) {
         socklen_t len = sizeof from->udp;
 
-        n = recvfrom(l->fd, buf, cap, 0, (struct sockaddr *) &from->udp, &len);
+        n = (int) recvfrom(l->fd, (char *) buf, (int) cap, 0,
+                           (struct sockaddr *) &from->udp, &len);
     } else {
 #ifdef USE_PCAP
         struct pcap_pkthdr  *h;
@@ -199,7 +198,7 @@ int link_recv(struct link *l, unsigned char *buf, size_t cap,
         struct sockaddr_ll sll;
         socklen_t          len = sizeof sll;
 
-        n = recvfrom(l->fd, buf, cap, 0, (struct sockaddr *) &sll, &len);
+        n = (int) recvfrom(l->fd, buf, cap, 0, (struct sockaddr *) &sll, &len);
         if (n > 0 && sll.sll_pkttype == PACKET_OUTGOING)
             return 0;                   /* our own frame, shown to us */
 #else
@@ -207,19 +206,21 @@ int link_recv(struct link *l, unsigned char *buf, size_t cap,
 #endif
     }
     if (n < 0)
-        return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR
-               ? 0 : -1;
-    return (int) n;
+        return sock_errno == SOCK_EAGAIN || sock_errno == SOCK_EINTR ? 0 : -1;
+    return n;
 }
 
 int link_send(struct link *l, const struct lladdr *to,
               const unsigned char *frame, size_t n) {
     if (l->kind == KIND_UDP)
-        return sendto(l->fd, frame, n, 0, (const struct sockaddr *) &to->udp,
+        return sendto(l->fd, (const char *) frame, (int) n, 0,
+                      (const struct sockaddr *) &to->udp,
                       sizeof to->udp) < 0 ? -1 : 0;
 #ifdef USE_PCAP
     return pcap_sendpacket(l->pcap, frame, (int) n) != 0 ? -1 : 0;
-#else
+#elif defined(__linux__)
     return write(l->fd, frame, n) < 0 ? -1 : 0;
+#else
+    return -1;
 #endif
 }

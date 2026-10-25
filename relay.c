@@ -16,18 +16,15 @@
  * be useful, but WITHOUT ANY WARRANTY; without even the implied warranty
  * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See LICENSE.
  */
-#include <errno.h>
-#include <netdb.h>
-#include <poll.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#include "sys.h"
+#ifdef WINSOCK
+#include <process.h>
+#endif
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include "ipx.h"
@@ -71,25 +68,26 @@ static int connect_upstream(void) {
         return -1;
     }
     for (ai = res; ai != NULL; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        fd = (int) socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
         if (fd >= 0 && connect(fd, ai->ai_addr, ai->ai_addrlen) == 0)
             break;
+        e = sock_errno;
         if (fd >= 0)
-            close(fd);
+            closesocket(fd);
         fd = -1;
     }
     freeaddrinfo(res);
     if (fd < 0)
         fprintf(stderr, "gork-relay: cannot connect to %s:%s: %s\n", up_host,
-                up_port, strerror(errno));
+                up_port, sock_strerror(e));
     return fd;
 }
 
 static int write_all(int fd, const char *p, size_t n) {
     while (n > 0) {
-        ssize_t w = write(fd, p, n);
+        int w = (int) send(fd, p, (int) n, 0);
 
-        if (w < 0 && errno == EINTR)
+        if (w < 0 && sock_errno == SOCK_EINTR)
             continue;
         if (w <= 0)
             return -1;
@@ -100,28 +98,36 @@ static int write_all(int fd, const char *p, size_t n) {
 }
 
 /* Copy bytes between the client and the upstream server until both have
-   finished; runs in a process of its own and does not return. */
-static void pump(int client) {
+   finished, then close the client: in a process of its own, or on Windows
+   a thread.  0, or 1 on failure. */
+static int pump(int client) {
     char          buf[16384];
     struct pollfd p[2];
     SSL_CTX      *ctx = NULL;
     SSL          *ssl = NULL;
     int           up = connect_upstream();
-    int           client_open = 1;
+    int           client_open = 1, rc = 1;
 
     if (up < 0)
-        _exit(1);
+        goto done;
     if (!up_plain) {
         ctx = SSL_CTX_new(TLS_client_method());
         if (ctx == NULL)
-            _exit(1);
+            goto done;
         if (!up_noverify) {
+#ifdef WINSOCK
+            /* the certificates Windows trusts; OpenSSL's default paths are
+               the build machine's, so only when they are named */
+            load_windows_roots(ctx);
+            if (getenv("SSL_CERT_FILE") != NULL ||
+                getenv("SSL_CERT_DIR") != NULL)
+#endif
             SSL_CTX_set_default_verify_paths(ctx);
             SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
         }
         ssl = SSL_new(ctx);
         if (ssl == NULL)
-            _exit(1);
+            goto done;
         SSL_set_fd(ssl, up);
         SSL_set_tlsext_host_name(ssl, up_host);
         if (!up_noverify)
@@ -133,28 +139,31 @@ static void pump(int client) {
                 fprintf(stderr, "gork-relay: certificate: %s\n",
                         X509_verify_cert_error_string(
                             SSL_get_verify_result(ssl)));
-            _exit(1);
+            SSL_free(ssl);
+            ssl = NULL;
+            goto done;
         }
     }
+    rc = 0;
     p[0].fd = client;
     p[1].fd = up;
     p[1].events = POLLIN;
     for (;;) {
-        ssize_t r;
+        int r;
 
         p[0].events = client_open ? POLLIN : 0;
         p[0].revents = p[1].revents = 0;
         /* TLS may hold bytes it has read already */
         if (!(ssl != NULL && SSL_pending(ssl) > 0) &&
-            poll(p, 2, -1) < 0 && errno != EINTR)
+            poll(p, 2, -1) < 0 && sock_errno != SOCK_EINTR)
             break;
         if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) {
-            r = read(client, buf, sizeof buf);
+            r = (int) recv(client, buf, sizeof buf, 0);
             if (r > 0) {
                 if (ssl != NULL ? SSL_write(ssl, buf, (int) r) <= 0
                                 : write_all(up, buf, (size_t) r) != 0)
                     break;
-            } else if (r == 0 || errno != EINTR) {
+            } else if (r == 0 || sock_errno != SOCK_EINTR) {
                 /* gork sends its request and waits: keep the upstream
                    open for the reply */
                 client_open = 0;
@@ -165,36 +174,77 @@ static void pump(int client) {
         if ((p[1].revents & (POLLIN | POLLHUP | POLLERR)) ||
             (ssl != NULL && SSL_pending(ssl) > 0)) {
             r = ssl != NULL ? SSL_read(ssl, buf, sizeof buf)
-                            : read(up, buf, sizeof buf);
+                            : (int) recv(up, buf, sizeof buf, 0);
             if (r <= 0)
                 break;                  /* the reply is complete */
             if (write_all(client, buf, (size_t) r) != 0)
                 break;
         }
     }
-    if (ssl != NULL)
+    if (ssl != NULL) {
         SSL_shutdown(ssl);
-    _exit(0);
+        SSL_free(ssl);
+    }
+done:
+    if (ctx != NULL)
+        SSL_CTX_free(ctx);
+    if (up >= 0)
+        closesocket(up);
+    closesocket(client);
+    return rc;
+}
+
+#ifdef WINSOCK
+static unsigned __stdcall pump_thread(void *client) {
+    return (unsigned) pump((int) (intptr_t) client);
+}
+#endif
+
+/* Start a pump for the connection `client`; `other` is a descriptor the
+   pump has no use for (-1: none).  0, or -1 with a message. */
+static int start_pump(int client, int other) {
+#ifdef WINSOCK
+    uintptr_t t = _beginthreadex(NULL, 0, pump_thread,
+                                 (void *) (intptr_t) client, 0, NULL);
+
+    (void) other;
+    if (t == 0) {
+        perror("gork-relay: thread");
+        closesocket(client);
+        return -1;
+    }
+    CloseHandle((HANDLE) t);
+    return 0;
+#else
+    pid_t pid = fork();
+
+    if (pid == 0) {
+        if (other >= 0)
+            close(other);
+        _exit(pump(client));
+    }
+    if (pid < 0)
+        perror("gork-relay: fork");
+    close(client);
+    return pid < 0 ? -1 : 0;
+#endif
 }
 
 /* A pump for an SPX connection: our end of a socket pair. */
 static int spx_accept(void) {
-    int   sv[2];
-    pid_t pid;
+    int sv[2];
 
+#ifdef WINSOCK
+    if (socketpair_tcp(sv) != 0)
+        return -1;
+#else
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0)
         return -1;
-    pid = fork();
-    if (pid < 0) {
-        close(sv[0]);
-        close(sv[1]);
+#endif
+    if (start_pump(sv[1], sv[0]) != 0) {
+        closesocket(sv[0]);
         return -1;
     }
-    if (pid == 0) {
-        close(sv[0]);
-        pump(sv[1]);
-    }
-    close(sv[1]);
     return sv[0];
 }
 
@@ -218,12 +268,16 @@ static int tcp_listen(const char *spec) {
     a.sin_port = htons((unsigned short) atoi(spec));
     if (inet_pton(AF_INET, host, &a.sin_addr) != 1)
         usage();
-    fd = socket(AF_INET, SOCK_STREAM, 0);
+    fd = (int) socket(AF_INET, SOCK_STREAM, 0);
+#ifndef WINSOCK
+    /* on Windows it would let another program take the port from us */
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+#endif
+    (void) one;
     if (fd < 0 || bind(fd, (struct sockaddr *) &a, sizeof a) != 0 ||
         listen(fd, 16) != 0) {
         fprintf(stderr, "gork-relay: cannot listen on %s:%s: %s\n", host,
-                spec, strerror(errno));
+                spec, sock_strerror(sock_errno));
         exit(1);
     }
     return fd;
@@ -246,7 +300,8 @@ int main(int argc, char **argv) {
     const char       *tcp = "8443", *linkspec = NULL;
     char             *colon;
     unsigned char     sock[2];
-    int               o, lfd = -1;
+    unsigned          mac[6];
+    int               o, i, lfd = -1;
 
     x.socket = 0x8443;
     while ((o = getopt(argc, argv, "t:x:n:s:m:pkv")) != -1) {
@@ -263,10 +318,12 @@ int main(int argc, char **argv) {
             x.socket = sock[0] << 8 | sock[1];
             break;
         case 'm':
-            if (sscanf(optarg, "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx",
-                       &x.link.mac[0], &x.link.mac[1], &x.link.mac[2],
-                       &x.link.mac[3], &x.link.mac[4], &x.link.mac[5]) != 6)
+            /* %hhx: not in the C library of Windows */
+            if (sscanf(optarg, "%2x:%2x:%2x:%2x:%2x:%2x", &mac[0], &mac[1],
+                       &mac[2], &mac[3], &mac[4], &mac[5]) != 6)
                 usage();
+            for (i = 0; i < 6; i++)
+                x.link.mac[i] = (unsigned char) mac[i];
             x.link.have_mac = 1;
             break;
         case 'p': up_plain = 1; break;
@@ -286,8 +343,12 @@ int main(int argc, char **argv) {
         up_port = "80";
     }
 
+    if (net_init() != 0)
+        return 1;
+#ifndef WINSOCK
     signal(SIGPIPE, SIG_IGN);
     signal(SIGCHLD, SIG_IGN);           /* the pumps are not waited for */
+#endif
 
     if (strcmp(tcp, "0") != 0)
         lfd = tcp_listen(tcp);
@@ -327,26 +388,18 @@ int main(int argc, char **argv) {
         /* wake for retransmissions, and for a link poll() cannot watch */
         r = poll(p, (nfds_t) n, linkspec == NULL ? -1
                                 : x.link.fd < 0 ? 10 : 100);
-        if (r < 0 && errno != EINTR) {
-            perror("gork-relay: poll");
+        if (r < 0 && sock_errno != SOCK_EINTR) {
+            fprintf(stderr, "gork-relay: poll: %s\n",
+                    sock_strerror(sock_errno));
             return 1;
         }
         if (r < 0)
             continue;
         if (lfd >= 0 && (p[0].revents & POLLIN)) {
-            int c = accept(lfd, NULL, NULL);
+            int c = (int) accept(lfd, NULL, NULL);
 
-            if (c >= 0) {
-                pid_t pid = fork();
-
-                if (pid == 0) {
-                    close(lfd);
-                    pump(c);
-                }
-                if (pid < 0)
-                    perror("gork-relay: fork");
-                close(c);
-            }
+            if (c >= 0)
+                start_pump(c, lfd);
         }
         if (linkspec != NULL) {
             ipx_input(&x);

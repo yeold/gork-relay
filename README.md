@@ -26,7 +26,8 @@ New. What has been tried:
 |---|---|
 | TCP to TLS | Works; `make check`, and by hand against a real HTTPS server. |
 | SPX | Works with two real IPX stacks, both in QEMU on Ethernet. Novell's IPX/SPX on DOS (PDIPX 1.10 on a packet driver, FreeDOS 1.3, Ethernet II frames): gork's `dostest.py` runs a round trip with a reply of many packets. And NWLink, the IPX of Windows (Windows Me): it asked for its network by RIP, took the number and the frame type from the relay's answer, and gork's Windows build ran its tool round trips over it, by hand. The test client in `test/relaytest.py` covers the other Ethernet encapsulations, lost packets and several connections at once. Not tried: `IPXODI`, and Windows versions other than Me. |
-| The `eth:` link | Works on Linux, on a tap device, as a packet socket and through libpcap (`RELAYTEST_TAP=1 make check`, as root). Not run on Cygwin with Npcap. |
+| The `eth:` link | Works on Linux, on a tap device, as a packet socket and through libpcap (`RELAYTEST_TAP=1 make check`, as root). Not run on Windows with Npcap. |
+| Windows | A native `.exe` (MinGW-w64, 32 and 64 bit) passes `make check`, TLS included, under Wine. Cygwin builds use the POSIX code. Both are built and checked on Windows by GitHub Actions. |
 
 ## Build
 
@@ -52,6 +53,20 @@ make PCAP=1 PCAPLIB=-lwpcap PCAPINC=-I/path/npcap-sdk/Include \
 
 Without `PCAP=1` a build that is not for Linux still has TCP and the
 `udp:` link.
+
+On Windows, either build with Cygwin (`gcc-core`, `make`, `libssl-devel`)
+and plain `make`, or make a native `.exe` with MinGW-w64, in MSYS2 or
+from Linux:
+
+```sh
+make WIN=1                                  # MSYS2 (UCRT64)
+make WIN=1 CC=x86_64-w64-mingw32-gcc LDFLAGS="-static -s" \
+     SSLLIBS="$(x86_64-w64-mingw32-pkg-config --static --libs openssl)"
+```
+
+The second needs no DLLs beyond Windows' own. The native build checks
+certificates against the ones Windows trusts. `RELAYTEST_TLS=1 make check`
+also checks TLS on the Internet.
 
 ## Run
 
@@ -120,8 +135,8 @@ One IPX node with one SPX listener, in user space ([ipx.c](ipx.c)):
   offers it is answered with plain SPX.
 - RIP: requests for the relay's network number are answered. It does not
   route and does not advertise itself with SAP.
-- Each connection is handed to a process of its own, which does the TLS,
-  as each TCP connection is.
+- Each connection is handed to a process of its own (on Windows, a
+  thread), which does the TLS, as each TCP connection is.
 
 | File | |
 |---|---|
@@ -129,6 +144,7 @@ One IPX node with one SPX listener, in user space ([ipx.c](ipx.c)):
 | [ipx.c](ipx.c), [ipx.h](ipx.h) | IPX input, RIP, SPX |
 | [frame.c](frame.c), [frame.h](frame.h) | IPX in and out of link-layer frames |
 | [link.c](link.c), [link.h](link.h) | The links: packet socket, libpcap, UDP |
+| [sys.c](sys.c), [sys.h](sys.h) | What differs on Windows: Winsock, threads, its certificates |
 | [test/relaytest.py](test/relaytest.py) | The checks, with an SPX client of their own |
 
 ## Licence

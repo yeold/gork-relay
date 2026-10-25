@@ -10,7 +10,7 @@
 #define FRAME_H
 
 #include <stddef.h>
-#include <netinet/in.h>
+#include "sys.h"
 
 enum { MEDIUM_ETHERNET, MEDIUM_TOKENRING };
 enum { FT_ETH2, FT_8022, FT_RAW, FT_SNAP };
