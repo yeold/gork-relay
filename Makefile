@@ -32,14 +32,25 @@ $(OBJS): ipx.h link.h frame.h sys.h
 relay.o: version.h
 
 # In a git checkout, v<version>-beta-<commits>, and -dirty when tracked
-# files are changed; out of one (a release tarball), the version alone.
+# files are changed; but the version alone for a clean checkout of its
+# release tag (v<version>, or $TAG_NAME, as Jenkins sets in a tag build,
+# when the checkout has no such tag), and out of git (a release tarball).
 # Written only when it changes, so relay.o is rebuilt just then.
 version.h: FORCE
 	@v=$$(sed -n 's/^#define VERSION "\(.*\)"/\1/p' relay.c); \
 	if test -e .git && git rev-parse --verify -q HEAD >/dev/null 2>&1; then \
 	    n=$$(git rev-list HEAD | wc -l | tr -d ' '); \
 	    d=$$(git diff HEAD --quiet 2>/dev/null || echo -dirty); \
-	    echo "#define GIT_VERSION \"v$$v-beta-$$n$$d\"" >version.h.new; \
+	    t=$$(git tag --points-at HEAD 2>/dev/null); \
+	    if test -n "$$TAG_NAME"; then \
+	        c=$$(git rev-parse -q --verify "refs/tags/$$TAG_NAME^{commit}" 2>/dev/null); \
+	        { test -z "$$c" || test "$$c" = "$$(git rev-parse HEAD)"; } && t="$$t $$TAG_NAME"; \
+	    fi; \
+	    case " $$t " in \
+	    *" v$$v "*) test -z "$$d" && echo "/* the release, v$$v */" >version.h.new || \
+	                echo "#define GIT_VERSION \"v$$v-beta-$$n$$d\"" >version.h.new ;; \
+	    *) echo "#define GIT_VERSION \"v$$v-beta-$$n$$d\"" >version.h.new ;; \
+	    esac; \
 	else \
 	    echo "/* not a git checkout: the version alone */" >version.h.new; \
 	fi; \

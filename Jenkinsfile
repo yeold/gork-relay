@@ -14,9 +14,9 @@ pipeline {
                 stage('linux') {
                     steps {
                         sh '''
-                            docker run --rm -v "$PWD":/src:ro -e RELAYTEST_TLS=1 debian:stable sh -ec '
+                            docker run --rm -e TAG_NAME -v "$PWD":/src:ro -e RELAYTEST_TLS=1 debian:stable sh -ec '
                                 apt-get -qq update
-                                DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends gcc libc6-dev make libssl-dev libpcap-dev python3 ca-certificates >/dev/null
+                                DEBIAN_FRONTEND=noninteractive apt-get -qq install -y --no-install-recommends git gcc libc6-dev make libssl-dev libpcap-dev python3 ca-certificates >/dev/null
                                 cp -r /src /tmp/r && cd /tmp/r
                                 make CFLAGS="-O2 -Wall -W -Werror" && make check
                                 make clean && make PCAP=1 CFLAGS="-O2 -Wall -W -Werror" && make check'
@@ -27,8 +27,8 @@ pipeline {
                     steps {
                         sh '''
                             mkdir -p out
-                            docker run --rm -v "$PWD":/src:ro -v "$PWD/out":/out fedora:latest sh -ec '
-                                dnf -q -y install make mingw32-gcc mingw32-openssl-static mingw32-zlib-static mingw32-pkg-config mingw64-gcc mingw64-openssl-static mingw64-zlib-static mingw64-pkg-config >/dev/null
+                            docker run --rm -e TAG_NAME -v "$PWD":/src:ro -v "$PWD/out":/out fedora:latest sh -ec '
+                                dnf -q -y install git make mingw32-gcc mingw32-openssl-static mingw32-zlib-static mingw32-pkg-config mingw64-gcc mingw64-openssl-static mingw64-zlib-static mingw64-pkg-config >/dev/null
                                 for a in i686 x86_64; do
                                     cp -r /src /tmp/r-$a && cd /tmp/r-$a && make clean >/dev/null
                                     make WIN=1 CC=$a-w64-mingw32-gcc CFLAGS="-O2 -Wall -W -Werror" LDFLAGS="-static -s" \
