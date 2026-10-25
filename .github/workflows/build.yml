@@ -121,3 +121,26 @@ jobs:
         run: |
           test -f test.log || exit 0
           printf '::error title=relaytest::%s\n' "$(tail -c 3000 test.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+
+  # On a tag, once the Windows checks pass: the release, with both .exe.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, msys2, cygwin]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: gork-relay-windows
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # the notes: the tag's own message
+          git fetch -q --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git tag -l --format='%(contents)' "$TAG" > notes.md
+          gh release view "$TAG" >/dev/null 2>&1 ||
+              gh release create "$TAG" --title "gork-relay $TAG" --notes-file notes.md
+          gh release upload "$TAG" gork-relay-i686.exe gork-relay-x86_64.exe --clobber

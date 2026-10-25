@@ -29,7 +29,7 @@
 #include <openssl/err.h>
 #include "ipx.h"
 
-#define VERSION "0.1"
+#define VERSION "0.2"
 
 static const char *up_host;             /* where everything is passed on to */
 static const char *up_port = "443";
