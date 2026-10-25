@@ -51,7 +51,8 @@ void        load_windows_roots(struct ssl_ctx_st *ctx);
 #define sock_strerror   strerror
 #endif
 
-/* Start Winsock; nothing elsewhere.  0, or -1 with a message. */
+/* Start Winsock, and leave stderr unbuffered; nothing elsewhere.  0, or -1
+   with a message. */
 int net_init(void);
 int set_nonblock(int fd);
 

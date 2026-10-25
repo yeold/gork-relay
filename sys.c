@@ -12,6 +12,9 @@
 int net_init(void) {
     WSADATA w;
 
+    /* msvcrt buffers stderr when it is a pipe or a file: a message must
+       be out before the relay is stopped */
+    setvbuf(stderr, NULL, _IONBF, 0);
     if (WSAStartup(MAKEWORD(2, 2), &w) != 0) {
         fprintf(stderr, "gork-relay: no Winsock 2.2\n");
         return -1;
