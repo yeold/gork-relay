@@ -37,7 +37,7 @@ relay.o: version.h
 # when the checkout has no such tag), and out of git (a release tarball).
 # Written only when it changes, so relay.o is rebuilt just then.
 version.h: FORCE
-	@v=$$(sed -n 's/^#define VERSION "\(.*\)"/\1/p' relay.c); \
+	@v=$$(sed -n 's/^#define VERSION "\(.*\)"/\1/p' relay.c | tr -d '\r'); \
 	if test -e .git && git rev-parse --verify -q HEAD >/dev/null 2>&1; then \
 	    n=$$(git rev-list HEAD | wc -l | tr -d ' '); \
 	    d=$$(git diff HEAD --quiet 2>/dev/null || echo -dirty); \
