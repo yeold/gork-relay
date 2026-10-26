@@ -81,7 +81,7 @@ listens on TCP port 8443 and passes everything on to
 unchanged: `relay = relayhost:8443`. It says so when it starts:
 
 ```
-gork-relay 0.3: TCP on 8443, passing on to api.anthropic.com:443
+gork-relay: v0.3, TCP on 8443, passing on to api.anthropic.com:443
 ```
 
 With SPX as well, on the network interface `eth0`:
@@ -106,10 +106,26 @@ gork-relay: SPX at 00000001.525400A1B2C3:8443 on eth:eth0
 | `-m MAC` | the interface's | Our node address. |
 | `-p` | | The upstream server speaks plain HTTP: no TLS. For a local model server, and for tests. |
 | `-k` | | Do not check the upstream certificate. |
-| `-v` | | Report connections. |
+| `-v` | | Report each connection, and put the time on every line (see below). |
 
 The packet socket needs root or `CAP_NET_RAW`
 (`setcap cap_net_raw+ep gork-relay`).
+
+With `-v` each connection is numbered and followed from start to end:
+who connected, the upstream address and TLS, the request line and
+`Host`, the reply's status line, and what happened at the end.
+
+```
+2026-10-26 08:18:08 gork-relay: #1: from 192.168.1.20:34326
+2026-10-26 08:18:08 gork-relay: #1: connected to api.anthropic.com:443 (160.79.104.10)
+2026-10-26 08:18:08 gork-relay: #1: TLSv1.3, TLS_AES_256_GCM_SHA384
+2026-10-26 08:18:08 gork-relay: #1: > POST /v1/messages HTTP/1.0, Host: api.anthropic.com
+2026-10-26 08:18:11 gork-relay: #1: < HTTP/1.1 200 OK
+2026-10-26 08:18:11 gork-relay: #1: done, 2104 bytes sent, 1530 received, 2950 ms: closed
+```
+
+No other header is shown, nor a query string: they are where API keys
+go. The report goes to stderr, so `2>relay.log` keeps it in a file.
 
 ### Links
 

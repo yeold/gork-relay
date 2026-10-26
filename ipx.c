@@ -78,7 +78,7 @@ static void ipx_send(struct ipx *x, const struct lladdr *ll,
     n = frame_encap(x->link.medium, x->link.mac, ll, pkt, len, frame,
                     sizeof frame);
     if (n == 0 || link_send(&x->link, ll, frame, n) != 0)
-        fprintf(stderr, "gork-relay: cannot send a frame\n");
+        say("cannot send a frame\n");
 }
 
 /* An SPX packet on connection c. */
@@ -114,7 +114,7 @@ static void send_queued(struct ipx *x, struct conn *c, struct packet *p) {
 
 static void conn_free(struct ipx *x, struct conn *c, const char *why) {
     if (x->verbose)
-        fprintf(stderr, "gork-relay: spx %04x closed: %s\n", c->id, why);
+        say("spx %04x closed: %s\n", c->id, why);
     if (c->fd >= 0)
         closesocket(c->fd);
     c->used = 0;
@@ -164,7 +164,7 @@ static struct conn *conn_new(struct ipx *x, const unsigned char *p,
     for (i = 0; i < SPX_CONNS && conns[i].used; i++)
         ;
     if (i == SPX_CONNS) {
-        fprintf(stderr, "gork-relay: too many SPX connections\n");
+        say("too many SPX connections\n");
         return NULL;
     }
     c = &conns[i];
@@ -182,7 +182,7 @@ static struct conn *conn_new(struct ipx *x, const unsigned char *p,
     c->ll = *ll;
     c->heard_at = now_ms();
     if (x->verbose)
-        fprintf(stderr, "gork-relay: spx %04x opened from "
+        say("spx %04x opened from "
                 "%02x%02x%02x%02x.%02x%02x%02x%02x%02x%02x\n", c->id,
                 p[18], p[19], p[20], p[21], p[22], p[23], p[24], p[25],
                 p[26], p[27]);

@@ -16,11 +16,13 @@
  * be useful, but WITHOUT ANY WARRANTY; without even the implied warranty
  * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See LICENSE.
  */
+#include <ctype.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include "sys.h"
 #ifdef WINSOCK
 #include <process.h>
@@ -62,15 +64,79 @@ static void usage(void) {
 
 /* ------------------------------------------------------------- the pump */
 
-static int connect_upstream(void) {
+/* One connection: the client's socket, and what -v calls it. */
+struct job {
+    int      client;
+    unsigned id;
+    char     from[64];
+};
+
+static unsigned jobs;                   /* connections so far, to number them */
+
+static long now_ms(void) {
+    struct timeval tv;
+
+    gettimeofday(&tv, NULL);
+    return (long) (tv.tv_sec % 1000000) * 1000 + tv.tv_usec / 1000;
+}
+
+/* Up to the line's end, at most size - 1 bytes, unprintables as '?'. */
+static void copy_line(const char *p, size_t n, char *out, size_t size) {
+    size_t i;
+
+    for (i = 0; i < n && i + 1 < size && p[i] != '\r' && p[i] != '\n'; i++)
+        out[i] = isprint((unsigned char) p[i]) ? p[i] : '?';
+    out[i] = '\0';
+}
+
+/* What -v says of a request: its first line, without a query string
+   (some APIs take the key there), and its Host.  No other header: they
+   hold the key. */
+static void describe_request(const char *p, size_t n, char *out,
+                             size_t size) {
+    char   host[128] = "", *q;
+    size_t i;
+
+    copy_line(p, n, out, size);
+    if ((q = strchr(out, '?')) != NULL) {
+        char *v = strrchr(out, ' ');    /* keep " HTTP/1.0" */
+
+        if (v > q)
+            memmove(q, v, strlen(v) + 1);
+        else
+            *q = '\0';
+    }
+    for (i = 0; i + 6 < n; i++) {
+        if (p[i] != '\n')
+            continue;
+        if (p[i + 1] == '\r' || p[i + 1] == '\n')
+            break;                      /* the end of the headers */
+        if (tolower((unsigned char) p[i + 1]) == 'h' &&
+            tolower((unsigned char) p[i + 2]) == 'o' &&
+            tolower((unsigned char) p[i + 3]) == 's' &&
+            tolower((unsigned char) p[i + 4]) == 't' && p[i + 5] == ':') {
+            for (i += 6; i < n && p[i] == ' '; i++)
+                ;
+            copy_line(p + i, n - i, host, sizeof host);
+            break;
+        }
+    }
+    if (*host != '\0' && strlen(out) + strlen(host) + 9 < size) {
+        strcat(out, ", Host: ");
+        strcat(out, host);
+    }
+}
+
+static int connect_upstream(unsigned id) {
     struct addrinfo hints, *res, *ai;
+    char            addr[64];
     int             fd = -1, e;
 
     memset(&hints, 0, sizeof hints);
     hints.ai_socktype = SOCK_STREAM;
     e = getaddrinfo(up_host, up_port, &hints, &res);
     if (e != 0) {
-        fprintf(stderr, "gork-relay: %s: %s\n", up_host, gai_strerror(e));
+        say("#%u: %s: %s\n", id, up_host, gai_strerror(e));
         return -1;
     }
     for (ai = res; ai != NULL; ai = ai->ai_next) {
@@ -82,10 +148,14 @@ static int connect_upstream(void) {
             closesocket(fd);
         fd = -1;
     }
+    if (fd >= 0 && verbose &&
+        getnameinfo(ai->ai_addr, ai->ai_addrlen, addr, sizeof addr, NULL, 0,
+                    NI_NUMERICHOST) == 0)
+        say("#%u: connected to %s:%s (%s)\n", id, up_host, up_port, addr);
     freeaddrinfo(res);
     if (fd < 0)
-        fprintf(stderr, "gork-relay: cannot connect to %s:%s: %s\n", up_host,
-                up_port, sock_strerror(e));
+        say("#%u: cannot connect to %s:%s: %s\n", id, up_host, up_port,
+            sock_strerror(e));
     return fd;
 }
 
@@ -103,17 +173,43 @@ static int write_all(int fd, const char *p, size_t n) {
     return 0;
 }
 
+/* Why an SSL call failed, for -v. */
+static const char *ssl_why(SSL *ssl, int r) {
+    static char   buf[160];
+    unsigned long e;
+
+    switch (SSL_get_error(ssl, r)) {
+    case SSL_ERROR_ZERO_RETURN:
+        return "closed";
+    case SSL_ERROR_SYSCALL:
+        if ((e = ERR_peek_error()) == 0)
+            return "closed without TLS close_notify";
+        break;
+    default:
+        e = ERR_peek_error();
+    }
+    ERR_error_string_n(e, buf, sizeof buf);
+    ERR_clear_error();
+    return buf;
+}
+
 /* Copy bytes between the client and the upstream server until both have
    finished, then close the client: in a process of its own, or on Windows
    a thread.  0, or 1 on failure. */
-static int pump(int client) {
-    char          buf[16384];
+static int pump(const struct job *j) {
+    char          buf[16384], line[320];
     struct pollfd p[2];
     SSL_CTX      *ctx = NULL;
     SSL          *ssl = NULL;
-    int           up = connect_upstream();
+    int           client = j->client, up;
     int           client_open = 1, rc = 1;
+    unsigned long sent = 0, got = 0;
+    long          start = now_ms();
+    const char   *why = "failed";
 
+    if (verbose)
+        say("#%u: from %s\n", j->id, j->from);
+    up = connect_upstream(j->id);
     if (up < 0)
         goto done;
     if (!up_plain) {
@@ -139,16 +235,20 @@ static int pump(int client) {
         if (!up_noverify)
             SSL_set1_host(ssl, up_host);
         if (SSL_connect(ssl) != 1) {
-            fprintf(stderr, "gork-relay: TLS with %s failed: ", up_host);
+            say("#%u: TLS with %s failed: ", j->id, up_host);
             ERR_print_errors_fp(stderr);
             if (SSL_get_verify_result(ssl) != X509_V_OK)
-                fprintf(stderr, "gork-relay: certificate: %s\n",
-                        X509_verify_cert_error_string(
-                            SSL_get_verify_result(ssl)));
+                say("#%u: certificate: %s\n", j->id,
+                    X509_verify_cert_error_string(
+                        SSL_get_verify_result(ssl)));
             SSL_free(ssl);
             ssl = NULL;
             goto done;
         }
+        if (verbose)
+            say("#%u: %s, %s%s\n", j->id, SSL_get_version(ssl),
+                SSL_get_cipher_name(ssl),
+                up_noverify ? ", certificate not checked" : "");
     }
     rc = 0;
     p[0].fd = client;
@@ -161,14 +261,23 @@ static int pump(int client) {
         p[0].revents = p[1].revents = 0;
         /* TLS may hold bytes it has read already */
         if (!(ssl != NULL && SSL_pending(ssl) > 0) &&
-            poll(p, 2, -1) < 0 && sock_errno != SOCK_EINTR)
+            poll(p, 2, -1) < 0 && sock_errno != SOCK_EINTR) {
+            why = "poll failed";
             break;
+        }
         if (p[0].revents & (POLLIN | POLLHUP | POLLERR)) {
             r = (int) recv(client, buf, sizeof buf, 0);
             if (r > 0) {
+                if (verbose && sent == 0) {
+                    describe_request(buf, (size_t) r, line, sizeof line);
+                    say("#%u: > %s\n", j->id, line);
+                }
+                sent += (unsigned long) r;
                 if (ssl != NULL ? SSL_write(ssl, buf, (int) r) <= 0
-                                : write_all(up, buf, (size_t) r) != 0)
+                                : write_all(up, buf, (size_t) r) != 0) {
+                    why = "sending to the server failed";
                     break;
+                }
             } else if (r == 0 || sock_errno != SOCK_EINTR) {
                 /* gork sends its request and waits: keep the upstream
                    open for the reply */
@@ -181,10 +290,20 @@ static int pump(int client) {
             (ssl != NULL && SSL_pending(ssl) > 0)) {
             r = ssl != NULL ? SSL_read(ssl, buf, sizeof buf)
                             : (int) recv(up, buf, sizeof buf, 0);
-            if (r <= 0)
-                break;                  /* the reply is complete */
-            if (write_all(client, buf, (size_t) r) != 0)
+            if (r <= 0) {               /* the reply is complete */
+                why = ssl != NULL ? ssl_why(ssl, r)
+                      : r == 0 ? "closed" : sock_strerror(sock_errno);
                 break;
+            }
+            if (verbose && got == 0) {
+                copy_line(buf, (size_t) r, line, sizeof line);
+                say("#%u: < %s\n", j->id, line);
+            }
+            got += (unsigned long) r;
+            if (write_all(client, buf, (size_t) r) != 0) {
+                why = "the client went away";
+                break;
+            }
         }
     }
     if (ssl != NULL) {
@@ -192,6 +311,9 @@ static int pump(int client) {
         SSL_free(ssl);
     }
 done:
+    if (verbose)
+        say("#%u: done, %lu bytes sent, %lu received, %ld ms: %s\n", j->id,
+            sent, got, now_ms() - start, rc == 0 ? why : "failed");
     if (ctx != NULL)
         SSL_CTX_free(ctx);
     if (up >= 0)
@@ -201,36 +323,52 @@ done:
 }
 
 #ifdef WINSOCK
-static unsigned __stdcall pump_thread(void *client) {
-    return (unsigned) pump((int) (intptr_t) client);
+static unsigned __stdcall pump_thread(void *arg) {
+    unsigned rc = (unsigned) pump((struct job *) arg);
+
+    free(arg);
+    return rc;
 }
 #endif
 
-/* Start a pump for the connection `client`; `other` is a descriptor the
-   pump has no use for (-1: none).  0, or -1 with a message. */
-static int start_pump(int client, int other) {
+/* Start a pump for the connection `client`, from `from`; `other` is a
+   descriptor the pump has no use for (-1: none).  0, or -1 with a
+   message. */
+static int start_pump(int client, const char *from, int other) {
+    struct job j;
 #ifdef WINSOCK
-    uintptr_t t = _beginthreadex(NULL, 0, pump_thread,
-                                 (void *) (intptr_t) client, 0, NULL);
+    struct job *copy;
+    uintptr_t   t = 0;
+#else
+    pid_t       pid;
+#endif
 
+    j.client = client;
+    j.id = ++jobs;
+    snprintf(j.from, sizeof j.from, "%s", from);
+#ifdef WINSOCK
     (void) other;
+    if ((copy = malloc(sizeof *copy)) != NULL) {
+        *copy = j;
+        t = _beginthreadex(NULL, 0, pump_thread, copy, 0, NULL);
+    }
     if (t == 0) {
-        perror("gork-relay: thread");
+        say("thread: %s\n", strerror(errno));
+        free(copy);
         closesocket(client);
         return -1;
     }
     CloseHandle((HANDLE) t);
     return 0;
 #else
-    pid_t pid = fork();
-
+    pid = fork();
     if (pid == 0) {
         if (other >= 0)
             close(other);
-        _exit(pump(client));
+        _exit(pump(&j));
     }
     if (pid < 0)
-        perror("gork-relay: fork");
+        say("fork: %s\n", strerror(errno));
     close(client);
     return pid < 0 ? -1 : 0;
 #endif
@@ -247,7 +385,7 @@ static int spx_accept(void) {
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0)
         return -1;
 #endif
-    if (start_pump(sv[1], sv[0]) != 0) {
+    if (start_pump(sv[1], "SPX", sv[0]) != 0) {
         closesocket(sv[0]);
         return -1;
     }
@@ -282,7 +420,7 @@ static int tcp_listen(const char *spec) {
     (void) one;
     if (fd < 0 || bind(fd, (struct sockaddr *) &a, sizeof a) != 0 ||
         listen(fd, 16) != 0) {
-        fprintf(stderr, "gork-relay: cannot listen on %s:%s: %s\n", host,
+        say("cannot listen on %s:%s: %s\n", host,
                 spec, sock_strerror(sock_errno));
         exit(1);
     }
@@ -338,7 +476,7 @@ int main(int argc, char **argv) {
             break;
         case 'p': up_plain = 1; break;
         case 'k': up_noverify = 1; break;
-        case 'v': verbose = x.verbose = 1; break;
+        case 'v': verbose = x.verbose = say_time = 1; break;
         default: usage();
         }
     }
@@ -366,7 +504,7 @@ int main(int argc, char **argv) {
         if (link_open(&x.link, linkspec) != 0)
             return 1;
         x.accept = spx_accept;
-        fprintf(stderr, "gork-relay: SPX at "
+        say("SPX at "
                 "%02X%02X%02X%02X.%02X%02X%02X%02X%02X%02X:%04X on %s%s\n",
                 x.net[0], x.net[1], x.net[2], x.net[3], x.link.mac[0],
                 x.link.mac[1], x.link.mac[2], x.link.mac[3], x.link.mac[4],
@@ -374,12 +512,12 @@ int main(int argc, char **argv) {
                 x.link.medium == MEDIUM_TOKENRING ? " (token ring)" : "");
     }
     if (lfd < 0 && linkspec == NULL) {
-        fprintf(stderr, "gork-relay: nothing to listen on\n");
+        say("nothing to listen on\n");
         return 2;
     }
     /* always: a console that stays blank looks like a relay that died */
     if (lfd >= 0)
-        fprintf(stderr, "gork-relay %s: TCP on %s, passing on to %s:%s%s\n",
+        say("%s, TCP on %s, passing on to %s:%s%s\n",
                 GIT_VERSION, tcp, up_host, up_port,
                 up_plain ? " (no TLS)" : "");
 
@@ -401,17 +539,24 @@ int main(int argc, char **argv) {
         r = poll(p, (nfds_t) n, linkspec == NULL ? -1
                                 : x.link.fd < 0 ? 10 : 100);
         if (r < 0 && sock_errno != SOCK_EINTR) {
-            fprintf(stderr, "gork-relay: poll: %s\n",
+            say("poll: %s\n",
                     sock_strerror(sock_errno));
             return 1;
         }
         if (r < 0)
             continue;
         if (lfd >= 0 && (p[0].revents & POLLIN)) {
-            int c = (int) accept(lfd, NULL, NULL);
+            struct sockaddr_storage a;
+            socklen_t               alen = sizeof a;
+            char                    host[64] = "?", port[8] = "?", from[80];
+            int c = (int) accept(lfd, (struct sockaddr *) &a, &alen);
 
-            if (c >= 0)
-                start_pump(c, lfd);
+            if (c >= 0) {
+                getnameinfo((struct sockaddr *) &a, alen, host, sizeof host,
+                            port, sizeof port, NI_NUMERICHOST | NI_NUMERICSERV);
+                snprintf(from, sizeof from, "%s:%s", host, port);
+                start_pump(c, from, lfd);
+            }
         }
         if (linkspec != NULL) {
             ipx_input(&x);

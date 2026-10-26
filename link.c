@@ -35,12 +35,12 @@ static int open_udp(struct link *l, const char *spec) {
     }
     a.sin_port = htons((unsigned short) atoi(spec));
     if (a.sin_port == 0 || inet_pton(AF_INET, host, &a.sin_addr) != 1) {
-        fprintf(stderr, "gork-relay: bad udp link, want udp:[ADDR:]PORT\n");
+        say("bad udp link, want udp:[ADDR:]PORT\n");
         return -1;
     }
     l->fd = (int) socket(AF_INET, SOCK_DGRAM, 0);
     if (l->fd < 0 || bind(l->fd, (struct sockaddr *) &a, sizeof a) != 0) {
-        fprintf(stderr, "gork-relay: udp link: %s\n",
+        say("udp link: %s\n",
                 sock_strerror(sock_errno));
         return -1;
     }
@@ -54,18 +54,18 @@ static int open_eth(struct link *l, const char *dev) {
     pcap_t *p = pcap_open_live(dev, 65535, 1, 10, err);
 
     if (p == NULL) {
-        fprintf(stderr, "gork-relay: %s: %s\n", dev, err);
+        say("%s: %s\n", dev, err);
         return -1;
     }
     if (pcap_datalink(p) == DLT_IEEE802) {
         l->medium = MEDIUM_TOKENRING;
     } else if (pcap_datalink(p) != DLT_EN10MB) {
-        fprintf(stderr, "gork-relay: %s is neither Ethernet nor token "
+        say("%s is neither Ethernet nor token "
                         "ring\n", dev);
         return -1;
     }
     if (pcap_setnonblock(p, 1, err) != 0)
-        fprintf(stderr, "gork-relay: %s: %s\n", dev, err);
+        say("%s: %s\n", dev, err);
     l->pcap = p;
 #ifdef SIOCGIFHWADDR
     if (!l->have_mac) {         /* elsewhere it must be given with -m */
@@ -96,13 +96,13 @@ static int open_eth(struct link *l, const char *dev) {
 
     l->fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
     if (l->fd < 0) {
-        perror("gork-relay: packet socket (needs root or CAP_NET_RAW)");
+        say("packet socket (needs root or CAP_NET_RAW): %s\n", strerror(errno));
         return -1;
     }
     memset(&ifr, 0, sizeof ifr);
     strncpy(ifr.ifr_name, dev, sizeof ifr.ifr_name - 1);
     if (ioctl(l->fd, SIOCGIFHWADDR, &ifr) != 0) {
-        perror(dev);
+        say("%s: %s\n", dev, strerror(errno));
         return -1;
     }
     /* 800 is ARPHRD_IEEE802_TR; kernels since 3.5 have no token ring, and
@@ -110,7 +110,7 @@ static int open_eth(struct link *l, const char *dev) {
     if (ifr.ifr_hwaddr.sa_family == 800) {
         l->medium = MEDIUM_TOKENRING;
     } else if (ifr.ifr_hwaddr.sa_family != ARPHRD_ETHER) {
-        fprintf(stderr, "gork-relay: %s is neither Ethernet nor token "
+        say("%s is neither Ethernet nor token "
                         "ring\n", dev);
         return -1;
     }
@@ -118,7 +118,7 @@ static int open_eth(struct link *l, const char *dev) {
         memcpy(l->mac, ifr.ifr_hwaddr.sa_data, 6);
     l->have_mac = 1;
     if (ioctl(l->fd, SIOCGIFINDEX, &ifr) != 0) {
-        perror(dev);
+        say("%s: %s\n", dev, strerror(errno));
         return -1;
     }
     memset(&sll, 0, sizeof sll);
@@ -126,7 +126,7 @@ static int open_eth(struct link *l, const char *dev) {
     sll.sll_protocol = htons(ETH_P_ALL);
     sll.sll_ifindex = ifr.ifr_ifindex;
     if (bind(l->fd, (struct sockaddr *) &sll, sizeof sll) != 0) {
-        perror(dev);
+        say("%s: %s\n", dev, strerror(errno));
         return -1;
     }
     set_nonblock(l->fd);
@@ -135,7 +135,7 @@ static int open_eth(struct link *l, const char *dev) {
 #else
 static int open_eth(struct link *l, const char *dev) {
     (void) l;
-    fprintf(stderr, "gork-relay: no eth link for %s in this build: it needs "
+    say("no eth link for %s in this build: it needs "
                     "Linux, or PCAP=1 with libpcap or Npcap\n", dev);
     return -1;
 }
@@ -156,13 +156,13 @@ int link_open(struct link *l, const char *spec) {
         if (open_udp(l, strchr(spec, ':') + 1) != 0)
             return -1;
     } else {
-        fprintf(stderr, "gork-relay: bad link '%s', want eth:IFACE or "
+        say("bad link '%s', want eth:IFACE or "
                         "udp:[ADDR:]PORT\n", spec);
         return -1;
     }
     if (!l->have_mac) {
         if (l->kind == KIND_ETH) {
-            fprintf(stderr, "gork-relay: this build cannot ask the interface "
+            say("this build cannot ask the interface "
                             "for its address; give it with -m\n");
             return -1;
         }

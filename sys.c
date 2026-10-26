@@ -1,8 +1,28 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* sys.c -- see sys.h. */
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "sys.h"
+
+int say_time;
+
+void say(const char *fmt, ...) {
+    char       line[1024];
+    size_t     n = 0;
+    time_t     t = time(NULL);
+    struct tm *tm = say_time ? localtime(&t) : NULL;
+    va_list    ap;
+
+    if (tm != NULL)
+        n = strftime(line, sizeof line, "%Y-%m-%d %H:%M:%S ", tm);
+    n += (size_t) snprintf(line + n, sizeof line - n, "gork-relay: ");
+    va_start(ap, fmt);
+    vsnprintf(line + n, sizeof line - n, fmt, ap);
+    va_end(ap);
+    fputs(line, stderr);
+}
 
 #ifdef WINSOCK
 #include <wincrypt.h>
@@ -16,7 +36,7 @@ int net_init(void) {
        be out before the relay is stopped */
     setvbuf(stderr, NULL, _IONBF, 0);
     if (WSAStartup(MAKEWORD(2, 2), &w) != 0) {
-        fprintf(stderr, "gork-relay: no Winsock 2.2\n");
+        say("no Winsock 2.2\n");
         return -1;
     }
     return 0;

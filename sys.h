@@ -51,6 +51,16 @@ void        load_windows_roots(struct ssl_ctx_st *ctx);
 #define sock_strerror   strerror
 #endif
 
+/* A message on stderr, after "gork-relay: ", in one write, so that the
+   pumps' lines do not run into each other; with say_time set (-v), after
+   the date and time as well. */
+extern int say_time;
+void say(const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 1, 2)))
+#endif
+    ;
+
 /* Start Winsock, and leave stderr unbuffered; nothing elsewhere.  0, or -1
    with a message. */
 int net_init(void);
