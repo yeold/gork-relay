@@ -78,7 +78,11 @@ gork-relay api.anthropic.com
 
 listens on TCP port 8443 and passes everything on to
 `api.anthropic.com:443`, checking its certificate. gork's side is
-unchanged: `relay = relayhost:8443`.
+unchanged: `relay = relayhost:8443`. It says so when it starts:
+
+```
+gork-relay 0.3: TCP on 8443, passing on to api.anthropic.com:443
+```
 
 With SPX as well, on the network interface `eth0`:
 
@@ -124,6 +128,22 @@ The packet socket needs root or `CAP_NET_RAW`
   qemu-system-i386 ... -netdev socket,id=n0,udp=127.0.0.1:9000,localaddr=127.0.0.1:9001 \
                        -device ne2k_isa,netdev=n0
   ```
+
+### Other servers
+
+The relay does not read what it passes on, so any server will do:
+OpenAI, a hosted OpenAI-compatible service, or vLLM, LM Studio, Ollama
+or llama.cpp. The API format is chosen in gork (`protocol = openai`).
+
+```sh
+gork-relay api.openai.com                     # HTTPS, port 443
+gork-relay -k vllm.lan:8000                   # HTTPS, self-signed certificate
+gork-relay -p -x eth:eth0 lmstudio.lan:1234   # plain HTTP, for SPX clients
+```
+
+The `Host` header goes on as gork wrote it, so gork's `host` should name
+the upstream server, not the relay. A local server on plain HTTP needs
+no relay over TCP: gork can reach it directly.
 
 ## What it implements
 

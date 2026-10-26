@@ -377,7 +377,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "gork-relay: nothing to listen on\n");
         return 2;
     }
-    if (verbose && lfd >= 0)
+    /* always: a console that stays blank looks like a relay that died */
+    if (lfd >= 0)
         fprintf(stderr, "gork-relay %s: TCP on %s, passing on to %s:%s%s\n",
                 GIT_VERSION, tcp, up_host, up_port,
                 up_plain ? " (no TLS)" : "");
