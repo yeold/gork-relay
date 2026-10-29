@@ -5,7 +5,7 @@
  * gork sends plain HTTP; the relay passes it on over TLS, as
  *     socat TCP-LISTEN:8443,fork,reuseaddr OPENSSL:api.anthropic.com:443
  * does.  It also listens on SPX, for clients on an IPX network, over
- * Ethernet or token ring (ipx.h).
+ * Ethernet or token ring (ipx.h), and on a serial line (serial.h).
  *
  * Copyright (C) 2026 the gork authors
  *
@@ -30,6 +30,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include "ipx.h"
+#include "serial.h"
 #include "version.h"
 
 #define VERSION "0.3"
@@ -56,6 +57,8 @@ static void usage(void) {
 "  -n NET          our IPX network number, hex (default 0: the local one)\n"
 "  -s SOCKET       our SPX socket, hex (default 8443)\n"
 "  -m MAC          our node address on the link, aa:bb:cc:dd:ee:ff\n"
+"  -S DEV[:BAUD[:rtscts]]  listen on a serial line too (9600 baud unless\n"
+"                  given)\n"
 "  -p              HOST speaks plain HTTP: no TLS\n"
 "  -k              do not check HOST's certificate\n"
 "  -v              say what happens\n");
@@ -374,8 +377,8 @@ static int start_pump(int client, const char *from, int other) {
 #endif
 }
 
-/* A pump for an SPX connection: our end of a socket pair. */
-static int spx_accept(void) {
+/* A pump for a connection that is not TCP: our end of a socket pair. */
+static int pair_accept(const char *from) {
     int sv[2];
 
 #ifdef WINSOCK
@@ -385,11 +388,15 @@ static int spx_accept(void) {
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0)
         return -1;
 #endif
-    if (start_pump(sv[1], "SPX", sv[0]) != 0) {
+    if (start_pump(sv[1], from, sv[0]) != 0) {
         closesocket(sv[0]);
         return -1;
     }
     return sv[0];
+}
+
+static int spx_accept(void) {
+    return pair_accept("SPX");
 }
 
 /* ----------------------------------------------------------------- main */
@@ -440,8 +447,9 @@ static int hex_bytes(const char *s, unsigned char *out, int n) {
 
 int main(int argc, char **argv) {
     static struct ipx x;
-    struct pollfd     p[SPX_CONNS + 2];
-    const char       *tcp = "8443", *linkspec = NULL;
+    static struct serial ser;
+    struct pollfd     p[SPX_CONNS + 4];
+    const char       *tcp = "8443", *linkspec = NULL, *serspec = NULL;
     char             *colon;
     unsigned char     sock[2];
     unsigned          mac[6];
@@ -452,8 +460,9 @@ int main(int argc, char **argv) {
         return 0;
     }
     x.socket = 0x8443;
-    while ((o = getopt(argc, argv, "t:x:n:s:m:pkv")) != -1) {
+    while ((o = getopt(argc, argv, "t:x:n:s:m:S:pkv")) != -1) {
         switch (o) {
+        case 'S': serspec = optarg; break;
         case 't': tcp = optarg; break;
         case 'x': linkspec = optarg; break;
         case 'n':
@@ -511,7 +520,12 @@ int main(int argc, char **argv) {
                 x.link.mac[5], x.socket, linkspec,
                 x.link.medium == MEDIUM_TOKENRING ? " (token ring)" : "");
     }
-    if (lfd < 0 && linkspec == NULL) {
+    if (serspec != NULL) {
+        ser.accept = pair_accept;
+        if (serial_open(&ser, serspec) != 0)
+            return 1;
+    }
+    if (lfd < 0 && linkspec == NULL && serspec == NULL) {
         say("nothing to listen on\n");
         return 2;
     }
@@ -520,9 +534,12 @@ int main(int argc, char **argv) {
         say("%s, TCP on %s, passing on to %s:%s%s\n",
                 GIT_VERSION, tcp, up_host, up_port,
                 up_plain ? " (no TLS)" : "");
+    else
+        say("%s, passing on to %s:%s%s\n", GIT_VERSION, up_host, up_port,
+                up_plain ? " (no TLS)" : "");
 
     for (;;) {
-        int n = 0, first, r;
+        int n = 0, first, sfirst = 0, sn = 0, r;
 
         if (lfd >= 0) {
             p[n].fd = lfd;
@@ -531,6 +548,11 @@ int main(int argc, char **argv) {
         if (linkspec != NULL && x.link.fd >= 0) {
             p[n].fd = x.link.fd;
             p[n++].events = POLLIN;
+        }
+        if (serspec != NULL) {
+            sfirst = n;
+            sn = serial_pollfds(&ser, p + n);
+            n += sn;
         }
         first = n;
         if (linkspec != NULL)
@@ -558,6 +580,8 @@ int main(int argc, char **argv) {
                 start_pump(c, from, lfd);
             }
         }
+        if (serspec != NULL)
+            serial_service(&ser, p + sfirst, sn);
         if (linkspec != NULL) {
             ipx_input(&x);
             spx_service(&x, p + first, n - first);

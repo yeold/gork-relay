@@ -23,12 +23,12 @@ EXE      = .exe
 LIBS    += -lws2_32 -lcrypt32 -lgdi32 -luser32 -ladvapi32
 endif
 
-OBJS = relay.o ipx.o link.o frame.o sys.o
+OBJS = relay.o ipx.o link.o frame.o sys.o serial.o
 
 gork-relay$(EXE): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) $(LIBS)
 
-$(OBJS): ipx.h link.h frame.h sys.h
+$(OBJS): ipx.h link.h frame.h sys.h serial.h
 relay.o: version.h
 
 # In a git checkout, v<version>-beta-<commits>, and -dirty when tracked

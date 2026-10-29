@@ -13,6 +13,9 @@ To check the eth: link as well, on a real interface, set $RELAYTEST_TAP
 and run as root on Linux: the test makes a tap device, the relay listens
 on it, and the client is the other end of the tap.
 
+The serial line (-S) is checked on a pseudo-terminal, where there are
+those (not under Wine).
+
 $RELAYTEST_TLS checks TLS on the Internet: a request to api.anthropic.com
 gets an answer, and badssl.com's bad certificates are refused.
 """
@@ -342,6 +345,64 @@ def check_tls():
     print("ok: TLS, with the certificate checked (and bad ones refused)")
 
 
+# ------------------------------------------------------------ serial line
+
+def sframe(t, i, d=b"", damage=False):
+    a = b = 0
+    raw = bytes([ord(t), i]) + d
+    for x in raw:
+        a = (a + x) % 255
+        b = (b + a) % 255
+    raw += bytes([b, a ^ damage])
+    raw = raw.replace(b"\xdb", b"\xdb\xdd").replace(b"\xc0", b"\xdb\xdc")
+    return b"\xc0" + raw + b"\xc0"
+
+
+def sread(fd, i, limit=30):
+    """The reply to request i: its 'D's up to its 'C'.  Other ids' frames
+    are skipped, as gork skips them."""
+    buf, got, end = b"", b"", time.time() + limit
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 1)
+        if r:
+            buf += os.read(fd, 65536)
+        while b"\xc0" in buf:
+            f, _, buf = buf.partition(b"\xc0")
+            f = f.replace(b"\xdb\xdc", b"\xc0").replace(b"\xdb\xdd", b"\xdb")
+            if len(f) < 4 or f[1] != i:
+                continue
+            if f[0:1] == b"C":
+                return got
+            got += f[2:-2]
+    raise AssertionError("no 'C' for request %d" % i)
+
+
+def ssend(fd, i, data):
+    os.write(fd, sframe("O", i))
+    for k in range(0, len(data), 1000):
+        os.write(fd, sframe("D", i, data[k:k + 1000]))
+
+
+def check_serial(fd):
+    body = bytes(range(256)) * 20               # END and ESC bytes too
+    ssend(fd, 1, request(b"/", body))
+    assert reply_body(sread(fd, 1)) == body[::-1]
+    ssend(fd, 2, request(b"/big", b"x"))
+    assert reply_body(sread(fd, 2)) == BIG
+    # abandoned half way: the next request is answered, the rest of the
+    # first is not taken for it
+    ssend(fd, 3, request(b"/big", b"x"))
+    time.sleep(0.2)
+    os.write(fd, b"\xc0\x01\x02junk")           # and noise on the line
+    ssend(fd, 4, request(b"/", b"hello"))
+    assert reply_body(sread(fd, 4)) == b"olleh"
+    # a damaged frame ends the request at once
+    os.write(fd, sframe("O", 5) + sframe("D", 5, b"POST", damage=True))
+    assert sread(fd, 5, 5) == b""
+    print("ok: serial line: replies of many frames, an abandoned request, "
+          "a damaged frame")
+
+
 def check_rip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(2)
@@ -364,6 +425,11 @@ def main():
                                 "-x", "udp:127.0.0.1:%d" % LINK, up]),
               subprocess.Popen(CMD + ["-p", "-t", "0",
                                 "-x", "udp+tr:127.0.0.1:%d" % LINK_TR, up])]
+    sfd = None
+    if os.name == "posix" and "wine" not in CMD[0] and hasattr(os, "openpty"):
+        sfd, slave = os.openpty()
+        relays.append(subprocess.Popen(CMD + ["-p", "-t", "0", "-S",
+                                              os.ttyname(slave), up]))
     try:
         # until the first answers (under Wine that takes a while), and a
         # little more for the second
@@ -382,6 +448,8 @@ def main():
         check_spx_parallel()
         check_token_ring()
         check_rip()
+        if sfd is not None:
+            check_serial(sfd)
         if os.environ.get("RELAYTEST_TAP"):
             check_eth()
         if os.environ.get("RELAYTEST_TLS"):

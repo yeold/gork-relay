@@ -5,13 +5,15 @@ for old and obscure operating systems.
 
 gork does not do TLS: it sends plain HTTP to a relay on your network, and
 the relay passes it on to the API over TLS. Until now that relay was one
-line of socat. gork-relay does the same job, and adds a second way in for
-machines that have no TCP/IP at all: **SPX, over an IPX network**.
+line of socat. gork-relay does the same job, and adds two ways in for
+machines that have no TCP/IP at all: **SPX, over an IPX network**, and
+**a serial line**, for machines with no network whatever.
 
 ```
 +----------+  plain HTTP   +------------+     TLS     +--------------+
 |   gork   |-- TCP ------->| gork-relay |------------>| /v1/messages |
 |          |-- SPX (IPX) ->|            |             +--------------+
+|          |-- serial ---->|            |
 +----------+               +------------+
 ```
 
@@ -27,6 +29,7 @@ New. What has been tried:
 | TCP to TLS | Works; `make check`, and by hand against a real HTTPS server. |
 | SPX | Works with two real IPX stacks, both in QEMU on Ethernet. Novell's IPX/SPX on DOS (PDIPX 1.10 on a packet driver, FreeDOS 1.3, Ethernet II frames): gork's `dostest.py` runs a round trip with a reply of many packets. And NWLink, the IPX of Windows (Windows Me): it asked for its network by RIP, took the number and the frame type from the relay's answer, and gork's Windows build ran its tool round trips over it, by hand. The test client in `test/relaytest.py` covers the other Ethernet encapsulations, lost packets and several connections at once. Not tried: `IPXODI`, and Windows versions other than Me. |
 | The `eth:` link | Works on Linux, on a tap device, as a packet socket and through libpcap (`RELAYTEST_TAP=1 make check`, as root). Not run on Windows with Npcap. |
+| Serial line | Works on a pseudo-terminal, with gork's serial build (`--with-serial`): `make check`, and gork's `testing/serialtest.py` for gork's side. Not tried on a real serial port. Not in the native Windows build; Cygwin's has it. |
 | Windows | A native `.exe` (MinGW-w64, 32 and 64 bit) passes `make check`, TLS included, under Wine. Cygwin builds use the POSIX code. Both are built and checked on Windows by GitHub Actions. |
 
 ## Build
@@ -104,6 +107,7 @@ gork-relay: SPX at 00000001.525400A1B2C3:8443 on eth:eth0
 | `-n NET` | `0` | Our IPX network number, in hex. With a number, RIP requests are answered, and clients that find their network that way (NWLink does) learn it and the frame type. `0` is "this segment", which is enough when nothing routes. |
 | `-s SOCKET` | `8443` | Our SPX socket, in hex. |
 | `-m MAC` | the interface's | Our node address. |
+| `-S DEV[:BAUD[:rtscts]]` | none | Listen on a serial line as well: see [Serial line](#serial-line). |
 | `-p` | | The upstream server speaks plain HTTP: no TLS. For a local model server, and for tests. |
 | `-k` | | Do not check the upstream certificate. |
 | `-v` | | Report each connection, and put the time on every line (see below). |
@@ -145,6 +149,23 @@ go. The report goes to stderr, so `2>relay.log` keeps it in a file.
                        -device ne2k_isa,netdev=n0
   ```
 
+### Serial line
+
+For a machine with no network at all, gork built `--with-serial` talks
+over a null-modem cable:
+
+```sh
+gork-relay -t 0 -S /dev/ttyS0:38400 api.anthropic.com
+```
+
+and in gork's config, `relay = serial:/dev/ttyS0:38400`. The speed is
+9600 unless given, and must be the same at both ends; `:rtscts` after it
+turns on hardware flow control. One request at a time goes over the
+line, in frames with a checksum; gork's
+[docs/SERIAL.md](https://github.com/yeold/gork/blob/main/docs/SERIAL.md)
+has the protocol. With `-v` each request is reported as a TCP
+connection is, `from` the device.
+
 ### Other servers
 
 The relay does not read what it passes on, so any server will do:
@@ -180,6 +201,7 @@ One IPX node with one SPX listener, in user space ([ipx.c](ipx.c)):
 | [ipx.c](ipx.c), [ipx.h](ipx.h) | IPX input, RIP, SPX |
 | [frame.c](frame.c), [frame.h](frame.h) | IPX in and out of link-layer frames |
 | [link.c](link.c), [link.h](link.h) | The links: packet socket, libpcap, UDP |
+| [serial.c](serial.c), [serial.h](serial.h) | The serial line: its frames, one request at a time |
 | [sys.c](sys.c), [sys.h](sys.h) | What differs on Windows: Winsock, threads, its certificates |
 | [test/relaytest.py](test/relaytest.py) | The checks, with an SPX client of their own |
 
