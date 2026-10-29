@@ -33,7 +33,7 @@
 #include "serial.h"
 #include "version.h"
 
-#define VERSION "0.3"
+#define VERSION "0.4"
 /* In a git checkout the Makefile names the build (version.h):
    v0.2-beta-<commits>, and -dirty with tracked files changed. */
 #ifndef GIT_VERSION

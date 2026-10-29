@@ -84,7 +84,7 @@ listens on TCP port 8443 and passes everything on to
 unchanged: `relay = relayhost:8443`. It says so when it starts:
 
 ```
-gork-relay: v0.3, TCP on 8443, passing on to api.anthropic.com:443
+gork-relay: v0.4, TCP on 8443, passing on to api.anthropic.com:443
 ```
 
 With SPX as well, on the network interface `eth0`:
